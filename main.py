@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 
 BOT_TOKEN = os.getenv("7917012747:AAEJ5qNz9mGjPnBS8GBX6KnNrRApNc2f3jw")
 CHANNEL_USERNAME = os.getenv("@SastaLootMandi")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID = int(os.getenv("1095610889"))
 
 ASK_NAME, ASK_DEAL, ASK_SCREENSHOT = range(3)
 
