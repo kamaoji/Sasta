@@ -1,6 +1,5 @@
-import logging
 import os
-import json
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -9,190 +8,175 @@ from telegram.ext import (
     ConversationHandler,
     MessageHandler,
     filters,
-    ContextTypes,
+    ContextTypes
 )
-from telegram.constants import ParseMode
+from telegram.error import BadRequest
 
-# --- 24/7 चलाने के लिए वेब सर्वर (Render के लिए) ---
-from flask import Flask
-from threading import Thread
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "I'm alive"
-
-def run():
-    app.run(host='0.0.0.0', port=8080) # Render इसी पोर्ट का उपयोग करता है
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
-# --- कॉन्फ़िगरेशन (Render के Environment Variables से) ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
-DATA_FILE = "loot_submissions.json"
-
-# --- लॉगिंग सेटअप ---
+# Logging setup for debugging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- स्टेट्स (बातचीत के चरण) ---
-CHECK_JOIN, ASK_NAME, GET_DEAL, GET_SCREENSHOT = range(4)
+# --- Configuration (Render पर Environment Variables में सेट करें) ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# अपने चैनल का यूजरनेम @ के साथ लिखें (जैसे: '@MyLootChannel') या ID (जैसे: -100123456789)
+CHANNEL_ID = os.environ.get("CHANNEL_ID") 
 
-# --- सहायक फंक्शन्स ---
-def load_data():
+# --- Conversation States ---
+# बातचीत के अलग-अलग पड़ाव के लिए States
+CHECK_MEMBERSHIP, GET_NAME, GET_DEAL, GET_SCREENSHOT = range(4)
+
+# --- Helper Function: To check if user is in the channel ---
+# यह फंक्शन चेक करेगा कि यूजर चैनल का मेंबर है या नहीं
+async def is_user_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-def save_data(new_entry):
-    data = load_data()
-    data.append(new_entry)
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    try:
-        member = await context.bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME.lstrip('@')}", user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        # अगर यूजर मेंबर, एडमिन या क्रिएटर है तो True
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        else:
+            return False
+    except BadRequest:
+        # अगर बॉट चैनल में एडमिन नहीं है या चैनल प्राइवेट है
+        logger.error(f"Error: Bot is not an administrator in the channel {CHANNEL_ID} or channel is incorrect.")
+        return False
     except Exception as e:
-        logger.error(f"Membership check error: {e}")
+        logger.error(f"An unexpected error occurred while checking membership: {e}")
         return False
 
-# --- बॉट के फंक्शन्स ---
+# --- Command Handlers ---
 
+# /start Command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    is_member = await check_membership(user.id, context)
+    logger.info(f"User {user.first_name} ({user.id}) started the bot.")
     
+    # चेक करें कि यूजर चैनल का मेंबर है या नहीं
+    is_member = await is_user_member(context, user.id)
+
     if is_member:
-        keyboard = [[InlineKeyboardButton("🚀 सबमिशन शुरू करें", callback_data="start_submission")]]
+        # अगर मेंबर है तो सीधा सवालों वाला मैसेज दिखाएँ
+        keyboard = [[InlineKeyboardButton("🚀 Let's Go!", callback_data='start_submission')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_html(
-            f"👋 <b>नमस्ते {user.first_name}!</b>\n\nमैं आपका Loot Submit Bot हूँ। 💥\n"
-            "अपनी खोजी हुई लूट को सबमिट करने के लिए नीचे दिए गए बटन पर क्लिक करें।",
+            "👇 नीचे दिए गए सवालों का जवाब दीजिए:",
             reply_markup=reply_markup
         )
-        return ASK_NAME
+        return CHECK_MEMBERSHIP
     else:
-        keyboard = [
-            [InlineKeyboardButton("🔗 चैनल ज्वाइन करें", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
-            [InlineKeyboardButton("✅ मैंने ज्वाइन कर लिया है", callback_data="check_join_again")],
-        ]
+        # अगर मेंबर नहीं है तो ज्वाइन करने के लिए कहें
+        keyboard = [[InlineKeyboardButton("✅ Join Channel", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
+                    [InlineKeyboardButton("🔄 Joined! Check Again", callback_data='check_join')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "नमस्ते! लूट सबमिट करने से पहले, कृपया हमारा टेलीग्राम चैनल ज्वाइन करें।",
+        await update.message.reply_html(
+            f"👋 नमस्ते {user.mention_html()}!\n\nमैं आपका <b>Loot Submit Bot</b> हूँ 💥\n\n"
+            "आगे बढ़ने के लिए, कृपया हमारा चैनल जॉइन करें।",
             reply_markup=reply_markup
         )
-        return CHECK_JOIN
+        return CHECK_MEMBERSHIP
 
-async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# --- Callback Query Handlers (Button Clicks) ---
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
-    user = query.from_user
-
-    is_member = await check_membership(user.id, context)
+    await query.answer() # बटन पर लोडिंग बंद करने के लिए
+    user_id = query.from_user.id
     
-    if is_member:
-        keyboard = [[InlineKeyboardButton("🚀 सबमिशन शुरू करें", callback_data="start_submission")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            text=f"धन्यवाद! अब आप सबमिशन शुरू कर सकते हैं।",
-            reply_markup=reply_markup
-        )
-        return ASK_NAME
-    else:
-        await query.answer("आपने अभी तक चैनल ज्वाइन नहीं किया है। कृपया पहले चैनल ज्वाइन करें।", show_alert=True)
-        return CHECK_JOIN
+    # अगर यूजर ने "Joined! Check Again" बटन दबाया
+    if query.data == 'check_join':
+        is_member = await is_user_member(context, user_id)
+        if is_member:
+            keyboard = [[InlineKeyboardButton("🚀 Let's Go!", callback_data='start_submission')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="बहुत बढ़िया! आपने चैनल जॉइन कर लिया है।\n\n👇 नीचे दिए गए सवालों का जवाब दीजिए:",
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            return CHECK_MEMBERSHIP
+        else:
+            await query.answer("आपने अभी तक चैनल जॉइन नहीं किया है। कृपया पहले जॉइन करें।", show_alert=True)
+            return CHECK_MEMBERSHIP
 
-async def start_submission_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(text="बहुत बढ़िया! चलिए शुरू करते हैं।\n\nसबसे पहले, आपका नाम क्या है?")
-    return ASK_NAME
+    # अगर यूजर ने "Let's Go!" बटन दबाया
+    elif query.data == 'start_submission':
+        await query.edit_message_text(text="शानदार! चलिए शुरू करते हैं।")
+        await query.message.reply_text("आपका नाम क्या है?")
+        return GET_NAME
 
+# --- Message Handlers for Conversation ---
+
+# 1. नाम लेना
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_name = update.message.text
     context.user_data['name'] = user_name
-    await update.message.reply_text(
-        f"ठीक है, {user_name}!\n\nअब, आपने कौन-सी deal loot की? उसका नाम या प्रोडक्ट का लिंक मुझे भेजें।"
-    )
+    logger.info(f"Name received: {user_name}")
+    await update.message.reply_text("बहुत अच्छे! अब बताएँ, आपने कौन-सी deal loot की? \nउसका नाम या link मुझे send करें।")
     return GET_DEAL
 
+# 2. डील का नाम/लिंक लेना
 async def get_deal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     deal_info = update.message.text
     context.user_data['deal'] = deal_info
-    await update.message.reply_text(
-        "शानदार! अब उस प्रोडक्ट का एक स्क्रीनशॉट भेजिए। 📸"
-    )
+    logger.info(f"Deal received: {deal_info}")
+    await update.message.reply_text("अब उस प्रोडक्ट का Screenshot भेजिए 📸")
     return GET_SCREENSHOT
 
+# 3. स्क्रीनशॉट लेना
 async def get_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
     photo_file = await update.message.photo[-1].get_file()
-    context.user_data['screenshot_id'] = photo_file.file_id
+    # आप चाहें तो फोटो को कहीं सेव या फॉरवर्ड कर सकते हैं
+    # await photo_file.download_to_drive('user_screenshot.jpg')
+    
+    logger.info(f"Screenshot received from {context.user_data.get('name')}")
+
+    # धन्यवाद वाला मैसेज
     await update.message.reply_html(
-        "🎉 <b>बहुत-बहुत धन्यवाद!</b> 🎉\n\n"
-        "आपकी एंट्री सफलतापूर्वक सबमिट हो गई है।\n"
-        "विजेता की घोषणा हर <b>रविवार रात 9 बजे</b> हमारे चैनल पर की जाएगी। All the best! 👍"
+        "🎉 <b>Thank You So Much!</b> 🎉\n\n"
+        "आपकी सबमिशन हमें मिल गयी है। आपने बहुत बढ़िया काम किया! 🙌\n\n"
+        "अब बस थोड़ा इंतज़ार करें। विनर का अनाउंसमेंट <b>Sunday रात 9 बजे</b> हमारे चैनल पर होगा।\n\n"
+        "Good Luck! 🍀"
     )
-    user_info = update.effective_user
-    submission_details = (
-        f"<b>🔥 नया लूट सबमिशन! 🔥</b>\n\n"
-        f"<b>सबमिट करने वाला:</b> @{user_info.username or 'N/A'} (ID: {user_info.id})\n"
-        f"<b>नाम (जो बताया गया):</b> {context.user_data.get('name')}\n"
-        f"<b>डील का विवरण/लिंक:</b>\n{context.user_data.get('deal')}"
-    )
-    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=submission_details, parse_mode=ParseMode.HTML)
-    await context.bot.send_photo(chat_id=ADMIN_CHAT_ID, photo=context.user_data['screenshot_id'])
     
-    entry = {
-        "user_id": user_info.id,
-        "telegram_username": user_info.username,
-        "provided_name": context.user_data.get('name'),
-        "deal_info": context.user_data.get('deal'),
-        "screenshot_file_id": context.user_data.get('screenshot_id'),
-        "timestamp": update.message.date.isoformat()
-    }
-    save_data(entry)
-    
+    # बातचीत का डेटा साफ़ करना
+    context.user_data.clear()
     return ConversationHandler.END
 
+# /cancel Command
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("कोई बात नहीं। जब आप तैयार हों, तो /start से दोबारा शुरू कर सकते हैं।")
+    await update.message.reply_text("कोई बात नहीं। प्रक्रिया रद्द कर दी गई है।")
+    context.user_data.clear()
     return ConversationHandler.END
 
 def main() -> None:
+    """Run the bot."""
+    if not BOT_TOKEN or not CHANNEL_ID:
+        logger.error("BOT_TOKEN or CHANNEL_ID environment variable not set!")
+        return
+
     application = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler('start', start)],
         states={
-            CHECK_JOIN: [CallbackQueryHandler(check_join_callback, pattern="^check_join_again$")],
-            ASK_NAME: [
-                CallbackQueryHandler(start_submission_callback, pattern="^start_submission$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)
+            CHECK_MEMBERSHIP: [
+                CallbackQueryHandler(button_handler, pattern='^check_join$'),
+                CallbackQueryHandler(button_handler, pattern='^start_submission$')
             ],
+            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_DEAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_deal)],
             GET_SCREENSHOT: [MessageHandler(filters.PHOTO, get_screenshot)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler('cancel', cancel)],
     )
 
     application.add_handler(conv_handler)
     
-    print(">>> Your service is live 🚀")
-    print(f">>> Available at your primary URL https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}")
-    
+    # बॉट को शुरू करें
     application.run_polling()
 
-if __name__ == "__main__":
-    keep_alive()
+if __name__ == '__main__':
     main()
