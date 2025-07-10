@@ -1,7 +1,7 @@
 import logging
 import os
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-# --- 24/7 चलाने के लिए वेब सर्वर ---
+# --- 24/7 चलाने के लिए वेब सर्वर (Render के लिए) ---
 from flask import Flask
 from threading import Thread
 
@@ -24,15 +24,13 @@ def home():
     return "I'm alive"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080) # Render इसी पोर्ट का उपयोग करता है
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- कॉन्फ़िगरेशन (Secrets से लेंगे) ---
-# महत्वपूर्ण: अपना टोकन और दूसरी जानकारी सीधे कोड में न डालें!
-# Replit के Secrets फीचर का उपयोग करें।
+# --- कॉन्फ़िगरेशन (Render के Environment Variables से) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
@@ -45,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- स्टेट्स (बातचीत के चरण) ---
-GET_NAME, GET_DEAL, GET_SCREENSHOT = range(3)
+CHECK_JOIN, ASK_NAME, GET_DEAL, GET_SCREENSHOT = range(4)
 
 # --- सहायक फंक्शन्स ---
 def load_data():
@@ -61,80 +59,100 @@ def save_data(new_entry):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# --- बॉट के सभी फंक्शन्स (जैसे start, get_name, आदि) ---
-# (यह फंक्शन पिछले जवाब जैसे ही हैं, कोई बदलाव नहीं)
-
 async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     try:
         member = await context.bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME.lstrip('@')}", user_id=user_id)
-        if member.status in ['member', 'administrator', 'creator']:
-            return True
-        return False
+        return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         logger.error(f"Membership check error: {e}")
         return False
 
+# --- बॉट के फंक्शन्स ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     is_member = await check_membership(user.id, context)
-    if not is_member:
+    
+    if is_member:
+        keyboard = [[InlineKeyboardButton("🚀 सबमिशन शुरू करें", callback_data="start_submission")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_html(
+            f"👋 <b>नमस्ते {user.first_name}!</b>\n\nमैं आपका Loot Submit Bot हूँ। 💥\n"
+            "अपनी खोजी हुई लूट को सबमिट करने के लिए नीचे दिए गए बटन पर क्लिक करें।",
+            reply_markup=reply_markup
+        )
+        return ASK_NAME
+    else:
         keyboard = [
             [InlineKeyboardButton("🔗 चैनल ज्वाइन करें", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
             [InlineKeyboardButton("✅ मैंने ज्वाइन कर लिया है", callback_data="check_join_again")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("नमस्ते! लूट सबमिट करने से पहले, कृपया हमारा टेलीग्राम चैनल ज्वाइन करें।", reply_markup=reply_markup)
-        return ConversationHandler.END
-    keyboard = [[InlineKeyboardButton("🚀 सबमिशन शुरू करें", callback_data="start_submission")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_html(f"👋 <b>नमस्ते {user.first_name}!</b>\n\nमैं आपका Loot Submit Bot हूँ। 💥", reply_markup=reply_markup)
-    return GET_NAME
+        await update.message.reply_text(
+            "नमस्ते! लूट सबमिट करने से पहले, कृपया हमारा टेलीग्राम चैनल ज्वाइन करें।",
+            reply_markup=reply_markup
+        )
+        return CHECK_JOIN
 
-async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     user = query.from_user
+
     is_member = await check_membership(user.id, context)
+    
     if is_member:
         keyboard = [[InlineKeyboardButton("🚀 सबमिशन शुरू करें", callback_data="start_submission")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=f"👋 <b>नमस्ते {user.first_name}!</b>\n\nअब आप सबमिशन शुरू कर सकते हैं।", reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-        return GET_NAME
+        await query.edit_message_text(
+            text=f"धन्यवाद! अब आप सबमिशन शुरू कर सकते हैं।",
+            reply_markup=reply_markup
+        )
+        return ASK_NAME
     else:
-        await query.message.reply_text("आपने अभी तक चैनल ज्वाइन नहीं किया है। कृपया पहले चैनल ज्वाइन करें।")
-        return ConversationHandler.END
+        await query.answer("आपने अभी तक चैनल ज्वाइन नहीं किया है। कृपया पहले चैनल ज्वाइन करें।", show_alert=True)
+        return CHECK_JOIN
 
-async def start_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def start_submission_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(text="बहुत बढ़िया! आपका नाम क्या है?")
-    return GET_NAME
+    await query.edit_message_text(text="बहुत बढ़िया! चलिए शुरू करते हैं।\n\nसबसे पहले, आपका नाम क्या है?")
+    return ASK_NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['name'] = update.message.text
-    await update.message.reply_text(f"ठीक है, {context.user_data['name']}!\n\nआपने कौन-सी deal loot की? उसका नाम या लिंक भेजें।")
+    user_name = update.message.text
+    context.user_data['name'] = user_name
+    await update.message.reply_text(
+        f"ठीक है, {user_name}!\n\nअब, आपने कौन-सी deal loot की? उसका नाम या प्रोडक्ट का लिंक मुझे भेजें।"
+    )
     return GET_DEAL
 
 async def get_deal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['deal'] = update.message.text
-    await update.message.reply_text("शानदार! अब उस प्रोडक्ट का एक स्क्रीनशॉट भेजिए। 📸")
+    deal_info = update.message.text
+    context.user_data['deal'] = deal_info
+    await update.message.reply_text(
+        "शानदार! अब उस प्रोडक्ट का एक स्क्रीनशॉट भेजिए। 📸"
+    )
     return GET_SCREENSHOT
 
 async def get_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     photo_file = await update.message.photo[-1].get_file()
     context.user_data['screenshot_id'] = photo_file.file_id
     await update.message.reply_html(
-        "🎉 <b>बहुत-बहुत धन्यवाद!</b> 🎉\n\nआपकी एंट्री सफलतापूर्वक सबमिट हो गई है।\nविजेता की घोषणा हर <b>रविवार रात 9 बजे</b> हमारे चैनल पर की जाएगी। All the best! 👍"
+        "🎉 <b>बहुत-बहुत धन्यवाद!</b> 🎉\n\n"
+        "आपकी एंट्री सफलतापूर्वक सबमिट हो गई है।\n"
+        "विजेता की घोषणा हर <b>रविवार रात 9 बजे</b> हमारे चैनल पर की जाएगी। All the best! 👍"
     )
     user_info = update.effective_user
     submission_details = (
         f"<b>🔥 नया लूट सबमिशन! 🔥</b>\n\n"
-        f"<b>सबमिट करने वाला:</b> @{user_info.username or 'N/A'}\n"
-        f"<b>नाम:</b> {context.user_data.get('name')}\n"
-        f"<b>डील:</b> {context.user_data.get('deal')}"
+        f"<b>सबमिट करने वाला:</b> @{user_info.username or 'N/A'} (ID: {user_info.id})\n"
+        f"<b>नाम (जो बताया गया):</b> {context.user_data.get('name')}\n"
+        f"<b>डील का विवरण/लिंक:</b>\n{context.user_data.get('deal')}"
     )
     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=submission_details, parse_mode=ParseMode.HTML)
     await context.bot.send_photo(chat_id=ADMIN_CHAT_ID, photo=context.user_data['screenshot_id'])
+    
     entry = {
         "user_id": user_info.id,
         "telegram_username": user_info.username,
@@ -144,28 +162,37 @@ async def get_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "timestamp": update.message.date.isoformat()
     }
     save_data(entry)
+    
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("कोई बात नहीं। जब आप तैयार हों, तो /start से दोबारा शुरू करें।")
+    await update.message.reply_text("कोई बात नहीं। जब आप तैयार हों, तो /start से दोबारा शुरू कर सकते हैं।")
     return ConversationHandler.END
 
 def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
+
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start), CallbackQueryHandler(check_join_callback, pattern="^check_join_again$")],
+        entry_points=[CommandHandler("start", start)],
         states={
-            GET_NAME: [CallbackQueryHandler(start_submission, pattern="^start_submission$"), MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            CHECK_JOIN: [CallbackQueryHandler(check_join_callback, pattern="^check_join_again$")],
+            ASK_NAME: [
+                CallbackQueryHandler(start_submission_callback, pattern="^start_submission$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)
+            ],
             GET_DEAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_deal)],
             GET_SCREENSHOT: [MessageHandler(filters.PHOTO, get_screenshot)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
     )
+
     application.add_handler(conv_handler)
-    print("बॉट शुरू हो रहा है...")
+    
+    print(">>> Your service is live 🚀")
+    print(f">>> Available at your primary URL https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}")
+    
     application.run_polling()
 
 if __name__ == "__main__":
-    keep_alive() # वेब सर्वर शुरू करें
-    main() # बॉट शुरू करें
+    keep_alive()
+    main()
