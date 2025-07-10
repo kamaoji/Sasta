@@ -3,7 +3,7 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
 
-BOT_TOKEN = os.getenv("7917012747:AAEJ5qNz9mGjPnBS8GBX6KnNrRApNc2f3jw")
+BOT_TOKEN = os.getenv("7917012747:AAG3un85yknH2q7mMdhjr9QfZHPzXcnEY8U")
 CHANNEL_USERNAME = os.getenv("@SastaLootMandi")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
