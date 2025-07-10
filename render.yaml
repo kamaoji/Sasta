@@ -1,0 +1,11 @@
+services:
+  - type: worker # 'worker' bot के लिए बेहतर है
+    name: sasta-loot-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # इसे हम Render Dashboard में डालेंगे
+      - key: CHANNEL_ID
+        sync: false # इसे भी Render Dashboard में डालेंगे
